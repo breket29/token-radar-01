@@ -1,4 +1,4 @@
-// Token Radar's model, radar-2: one sealed snapshot of the protocol universe in,
+// Token Radar's model, radar-3: one sealed snapshot of the protocol universe in,
 // one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a
@@ -13,9 +13,18 @@
 // Implied value follows only from the snapshot's own figures, through a
 // comparable the snapshot itself supplies:
 //
-//   ratio        = median mcap / TVL of the token-bearing protocols in the
-//                  row's own category (at least 3 of them), else the median
-//                  over every token-bearing protocol in the snapshot
+//   ratio        = the row's category ratio, read on a ladder:
+//                  (a) a category with traded names reads a SHRUNK
+//                  log-median: the median of its names' log(mcap/TVL),
+//                  pulled toward the global log-median with a prior worth
+//                  3 notional names, so one wild name cannot set a
+//                  category and a category with many names keeps almost
+//                  all of its own reading;
+//                  (b) a category with no traded name reads the SIZE LINE:
+//                  the OLS line of log(mcap/TVL) on log(TVL) over every
+//                  traded name in the snapshot (bigger protocols trade at
+//                  lower multiples, correlation about -0.41), at this
+//                  category's median TVL.
 //   base         = tvl_usd x ratio
 //   growth       = clamp(change_7d, -60, 120) per cent
 //   growthMult   = 1 + (growth / 100) x GROWTH_WEIGHT
@@ -24,11 +33,12 @@
 //   implied      = max(1, round(base x growthMult x maturity x chainMult))
 //
 // A category's ratio is what the market already pays for a dollar of TVL in
-// that line of business: Dexs trade near 0.34x TVL, Lending near 0.13x, and a
-// category with too few traded names to read falls back to the snapshot's
-// global median near 0.20x. No protocol name is ever special-cased: the same
-// function scores every row, and the ratios are recomputed from the snapshot
-// on every run, so a different snapshot gives different ratios.
+// that line of business: Dexs trade near 0.31x TVL, Lending near 0.14x, and
+// a line with too few traded names to read on its own is pulled toward the
+// snapshot's global median near 0.21x instead of taking it whole. No
+// protocol name is ever special-cased: the same function scores every row,
+// and the ratios, the prior and the size line are recomputed from the
+// snapshot on every run, so a different snapshot gives different ratios.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -64,7 +74,7 @@ export interface ModelConstants {
   unknown_age_days: number;
   chain_step: number;
   chain_cap: number;
-  min_comparables: number;
+  shrinkage_names: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -77,26 +87,47 @@ export const MODEL: ModelConstants = {
   unknown_age_days: 365,
   chain_step: 0.02,
   chain_cap: 5,
-  min_comparables: 3,
+  shrinkage_names: 3,
 };
 
 /** The model's version label: the dashboard names it and the page states it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live view carries, by market cap. */
 export const LIVE_ROWS = 24;
 
-/** A category's comparable: its median mcap/TVL and how many traded names read it. */
+/** A category's comparable: its ratio, how it was read, and the reading behind it. */
 export interface CategoryRatio {
   ratio: number;
   comparables: number;
   fallback: boolean;
+  tier: 'category' | 'size';
+  shrink_weight: number | null;
+  category_median: number | null;
+  size_median_log_tvl: number | null;
 }
 
-/** The comparables the snapshot supplies: one ratio per category, plus the global one. */
+/** The size line: log(mcap/TVL) against log(TVL) over the traded names. */
+export interface SizeLine {
+  intercept: number;
+  slope: number;
+  correlation: number;
+  n: number;
+}
+
+/** One traded name behind a category's ratio. */
+export interface ComparableName {
+  name: string;
+  ratio: number;
+  tvl_usd: number;
+}
+
+/** The comparables the snapshot supplies: one ratio per category, the global one, the size line, and the names behind each ratio. */
 export interface Comparables {
   by_category: Record<string, CategoryRatio>;
   global: CategoryRatio;
+  size_line: SizeLine;
+  comparable_names: Record<string, ComparableName[]>;
 }
 
 /** A farm step: the action, what it costs, and how long it takes. */
@@ -126,6 +157,10 @@ export interface BoardRow {
     category_ratio: number;
     ratio_comparables: number;
     ratio_fallback: boolean;
+    ratio_tier: 'category' | 'size';
+    ratio_shrink_weight: number | null;
+    ratio_category_median: number | null;
+    size_median_log_tvl: number | null;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
@@ -152,6 +187,11 @@ export interface RadarRow {
   category_ratio: number;
   ratio_comparables: number;
   ratio_fallback: boolean;
+  ratio_tier: 'category' | 'size';
+  ratio_shrink_weight: number | null;
+  ratio_category_median: number | null;
+  size_median_log_tvl: number | null;
+  tvl_percentile_in_category: number | null;
   growth_multiplier: number;
   maturity_multiplier: number;
   chain_multiplier: number;
@@ -218,43 +258,112 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
 }
 
 /**
- * The comparables: for every category, the median mcap/TVL of its
- * token-bearing protocols, and the same median over the whole snapshot.
- * A category with fewer than `min_comparables` traded names reads the
- * global median instead, and says so in `fallback`.
+ * OLS of log(mcap/TVL) on log(TVL) over the traded names: the size line.
+ * The slope is negative in this snapshot (bigger protocols trade at lower
+ * multiples); the line is recomputed from the snapshot on every run.
+ */
+export function fitSizeLine(points: { logTvl: number; logRatio: number }[]): SizeLine {
+  const n = points.length;
+  if (n < 2) return { intercept: 0, slope: 0, correlation: 0, n };
+  let mx = 0, my = 0;
+  for (const p of points) { mx += p.logTvl; my += p.logRatio; }
+  mx /= n; my /= n;
+  let cov = 0, vx = 0, vy = 0;
+  for (const p of points) {
+    const dx = p.logTvl - mx, dy = p.logRatio - my;
+    cov += dx * dy; vx += dx * dx; vy += dy * dy;
+  }
+  const slope = vx === 0 ? 0 : cov / vx;
+  const intercept = my - slope * mx;
+  const correlation = vx === 0 || vy === 0 ? 0 : cov / Math.sqrt(vx * vy);
+  return { intercept: round4(intercept), slope: round4(slope), correlation: round4(correlation), n };
+}
+
+/**
+ * The comparables: for every category, a ratio read from the snapshot's own
+ * traded names, and the size line for the categories that have none.
+ *
+ * A category with traded names reads a shrunk log-median: the median of its
+ * names' log(mcap/TVL), pulled toward the global log-median with a prior
+ * worth `shrinkage_names` notional names. One wild name (a 400x multiple on
+ * a $6M TVL) cannot set a category on its own, and a category with many
+ * names keeps almost all of its own reading.
+ *
+ * A category with no traded name reads the size line at its own median log
+ * TVL: the multiple the traded universe pays at this line of business's
+ * size. The line, the prior and every ratio are recomputed from the
+ * snapshot on every run.
  */
 export function categoryRatios(snapshot: Snapshot, model: ModelConstants = MODEL): Comparables {
   const perCategory = new Map<string, number[]>();
   const all: number[] = [];
+  const allLog: number[] = [];
+  const tradedPoints: { logTvl: number; logRatio: number }[] = [];
   for (const p of snapshot.protocols) {
     if (p.mcap_usd === null || p.gecko_id === null) continue;
     if (p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
     const r = p.mcap_usd / p.tvl_usd;
     all.push(r);
+    allLog.push(Math.log(r));
+    tradedPoints.push({ logTvl: Math.log(p.tvl_usd), logRatio: Math.log(r) });
     const key = p.category ?? 'Unknown';
     const list = perCategory.get(key) ?? [];
-    list.push(r);
+    list.push(Math.log(r));
     perCategory.set(key, list);
   }
   all.sort((a, b) => a - b);
+  allLog.sort((a, b) => a - b);
   const globalRatio = median(all);
-  const global: CategoryRatio = { ratio: round4(globalRatio), comparables: all.length, fallback: false };
+  const globalLog = median(allLog);
+  const global: CategoryRatio = { ratio: round4(globalRatio), comparables: all.length, fallback: false, tier: 'category', shrink_weight: null, category_median: round4(globalRatio), size_median_log_tvl: null };
+  const sizeLine = fitSizeLine(tradedPoints);
+  const allLogTvls = snapshot.protocols.filter((p) => p.tvl_usd > 0).map((p) => Math.log(p.tvl_usd)).sort((a, b) => a - b);
+  const globalLogTvl = median(allLogTvls);
+  const byCatProtocols = new Map<string, SnapshotProtocol[]>();
+  for (const p of snapshot.protocols) {
+    const key = p.category ?? 'Unknown';
+    const list = byCatProtocols.get(key) ?? [];
+    list.push(p);
+    byCatProtocols.set(key, list);
+  }
   const by_category: Record<string, CategoryRatio> = {};
   for (const [key, list] of perCategory) {
     list.sort((a, b) => a - b);
-    if (list.length >= model.min_comparables) {
-      by_category[key] = { ratio: round4(median(list)), comparables: list.length, fallback: false };
-    }
+    const n = list.length;
+    const med = median(list);
+    const w = n / (n + model.shrinkage_names);
+    const shrunk = w * med + (1 - w) * globalLog;
+    by_category[key] = { ratio: round4(Math.exp(shrunk)), comparables: n, fallback: false, tier: 'category', shrink_weight: round4(w), category_median: round4(Math.exp(med)), size_median_log_tvl: null };
   }
-  return { by_category, global };
+  for (const [key, ps] of byCatProtocols) {
+    if (by_category[key] !== undefined) continue;
+    const tvls = ps.filter((p) => p.tvl_usd > 0).map((p) => Math.log(p.tvl_usd)).sort((a, b) => a - b);
+    const medLogTvl = tvls.length > 0 ? median(tvls) : globalLogTvl;
+    const ratio = Math.exp(sizeLine.intercept + sizeLine.slope * medLogTvl);
+    by_category[key] = { ratio: round4(ratio), comparables: 0, fallback: true, tier: 'size', shrink_weight: null, category_median: null, size_median_log_tvl: round4(medLogTvl) };
+  }
+  const comparable_names: Record<string, ComparableName[]> = {};
+  for (const p of snapshot.protocols) {
+    if (p.mcap_usd === null || p.gecko_id === null) continue;
+    if (p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
+    const key = p.category ?? 'Unknown';
+    const list = comparable_names[key] ?? [];
+    list.push({ name: p.name, ratio: round4(p.mcap_usd / p.tvl_usd), tvl_usd: p.tvl_usd });
+    comparable_names[key] = list;
+  }
+  for (const key of Object.keys(comparable_names)) {
+    comparable_names[key]!.sort((a, b) => b.tvl_usd - a.tvl_usd);
+    comparable_names[key] = comparable_names[key]!.slice(0, 5);
+  }
+  return { by_category, global, size_line: sizeLine, comparable_names };
 }
 
-/** The ratio one protocol's category reads, with its fallback marked. */
+/** The ratio one protocol's category reads, with its tier marked. */
 export function ratioFor(p: SnapshotProtocol, comparables: Comparables): CategoryRatio {
   const key = p.category ?? 'Unknown';
   const own = comparables.by_category[key];
   if (own !== undefined) return own;
-  return { ratio: comparables.global.ratio, comparables: comparables.global.comparables, fallback: true };
+  return { ...comparables.global, fallback: true };
 }
 
 /** The multipliers and the implied value one protocol gets under `model`. */
@@ -357,6 +466,10 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       category_ratio: s.ratio.ratio,
       ratio_comparables: s.ratio.comparables,
       ratio_fallback: s.ratio.fallback,
+      ratio_tier: s.ratio.tier,
+      ratio_shrink_weight: s.ratio.shrink_weight,
+      ratio_category_median: s.ratio.category_median,
+      size_median_log_tvl: s.ratio.size_median_log_tvl,
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
@@ -504,7 +617,7 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
 }
 
 /** A board row's compact form for data.js, with the farm plan travelling with it. */
-export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
+export function radarRow(row: BoardRow, watchlist: Set<string>, tvlPercentile: number | null): RadarRow {
   return {
     rank: row.rank,
     slug: row.slug,
@@ -521,6 +634,11 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     category_ratio: row.model.category_ratio,
     ratio_comparables: row.model.ratio_comparables,
     ratio_fallback: row.model.ratio_fallback,
+    ratio_tier: row.model.ratio_tier,
+    ratio_shrink_weight: row.model.ratio_shrink_weight,
+    ratio_category_median: row.model.ratio_category_median,
+    size_median_log_tvl: row.model.size_median_log_tvl,
+    tvl_percentile_in_category: tvlPercentile,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     chain_multiplier: row.model.chain_multiplier,
@@ -534,6 +652,23 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const comparables = categoryRatios(snapshot, model);
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
+  // A row's TVL percentile inside its own category, over every protocol the
+  // snapshot carries in it: where this protocol sits among its own kind.
+  const catTvls = new Map<string, number[]>();
+  for (const p of snapshot.protocols) {
+    const key = p.category ?? 'Unknown';
+    const list = catTvls.get(key) ?? [];
+    list.push(p.tvl_usd);
+    catTvls.set(key, list);
+  }
+  for (const list of catTvls.values()) list.sort((a, b) => a - b);
+  const percentileOf = (row: BoardRow): number | null => {
+    const list = catTvls.get(row.category ?? 'Unknown');
+    if (list === undefined || list.length === 0) return null;
+    let atOrBelow = 0;
+    for (const t of list) if (t <= row.tvl_usd) atOrBelow++;
+    return Math.round((atOrBelow / list.length) * 100);
+  };
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -545,7 +680,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     board_size: board.length,
     early_size: early,
     live_size: live.length,
-    rows: board.map((r) => radarRow(r, new Set(snapshot.watchlist))),
+    rows: board.map((r) => radarRow(r, new Set(snapshot.watchlist), percentileOf(r))),
     live,
   };
   return { board, radar };

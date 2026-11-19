@@ -36,6 +36,19 @@ header.hero p.meta { color: var(--faint); margin: 0; font-size: 13px; }
 .stat .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
 .stat .v { font-size: 24px; font-weight: 700; margin-top: 2px; }
 .stat .s { color: var(--faint); font-size: 12px; margin-top: 2px; }
+.tiers { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+.top3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 0 0 18px; }
+.top3card { background: var(--panel); border: 1px solid var(--accent-dim); border-radius: var(--radius); padding: 12px 14px; text-align: left; color: var(--text); font: inherit; cursor: pointer; }
+.top3card:hover { background: #182742; }
+.top3card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+.top3card .v { font-size: 19px; font-weight: 700; margin-top: 2px; }
+.top3card .s { color: var(--accent); font-size: 13px; margin-top: 2px; }
+.tscroll { overflow-x: auto; }
+.tscroll table.board { min-width: 640px; }
+.badge.cat { background: #173a2a; border-color: #24573e; color: #8fe3b4; }
+.badge.size { background: #3a2a17; border-color: #57402a; color: #e3c58f; }
+ul.names { margin: 0 0 10px; padding-left: 20px; }
+ul.names li { margin-bottom: 4px; font-size: 14px; }
 .tabs { display: flex; gap: 8px; margin: 18px 0 12px; }
 .tab { background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 7px 16px; font: inherit; font-size: 14px; cursor: pointer; }
 .tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #14100a; font-weight: 700; }
@@ -87,5 +100,12 @@ footer.foot p { margin: 0 0 4px; }
 @media (max-width: 760px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
   .detail .grid { grid-template-columns: repeat(2, 1fr); }
+  .top3 { grid-template-columns: 1fr; }
   table.board th:nth-child(4), table.board td:nth-child(4) { display: none; }
+}
+@media (max-width: 520px) {
+  header.hero h1 { font-size: 24px; }
+  .wrap { padding: 20px 14px 36px; }
+  .detail .grid { grid-template-columns: 1fr; }
+  table.board th:nth-child(7), table.board td:nth-child(7) { display: none; }
 }
