@@ -1,4 +1,4 @@
-// Token Radar's model, radar-3: one sealed snapshot of the protocol universe in,
+// Token Radar's model, radar-4: one sealed snapshot of the protocol universe in,
 // one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a
@@ -87,11 +87,11 @@ export const MODEL: ModelConstants = {
   unknown_age_days: 365,
   chain_step: 0.02,
   chain_cap: 5,
-  shrinkage_names: 3,
+  shrinkage_names: 9,
 };
 
 /** The model's version label: the dashboard names it and the page states it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** How many live-token protocols the Live view carries, by market cap. */
 export const LIVE_ROWS = 24;

@@ -172,6 +172,7 @@
       var nameCell = el('td', null);
       nameCell.appendChild(document.createTextNode(r.name + ' '));
       if (r.watchlist) nameCell.appendChild(el('span', { 'class': 'badge watch', text: 'watchlist' }));
+      if (r.ratio_comparables === 1) nameCell.appendChild(el('span', { 'class': 'badge single', text: '1 comparable' }));
       tr.appendChild(nameCell);
       tr.appendChild(el('td', { text: r.category || '—' }));
       var ch = (r.chains || []).slice(0, 2).join(', ');
@@ -237,9 +238,13 @@
         })),
         el('p', { 'class': 'sub', text: 'Largest traded names in ' + (row.category || 'this category') + ' by TVL, at most five. The median of all ' + row.ratio_comparables + ' is what the model shrinks.' }));
     var pct = row.tvl_percentile_in_category;
+    var singleWarn = (row.ratio_tier === 'category' && row.ratio_comparables === 1 && names.length > 0)
+      ? el('p', { 'class': 'warn' }, el('b', { text: 'Single comparable — low confidence. ' }), document.createTextNode('This category\u2019s ratio rests on one traded name, ' + names[0].name + ' — ' + names[0].ratio.toFixed(4) + '× on TVL ' + fmtUsd(names[0].tvl_usd) + '. One name\u2019s multiple moves every row in this category.'))
+      : null;
     var box = el('div', { 'class': 'detail' },
       el('h2', null, document.createTextNode('#' + row.rank + ' ' + row.name + ' '), el('small', { text: row.watchlist ? '· on the watchlist' : '· below the watchlist floor' })),
       el('p', { 'class': 'sub', text: (row.category || 'Uncategorised') + ' · ' + (row.chains || []).join(', ') + ' · tracked since ' + (row.listed_at || 'unknown') + ' · records no token' }),
+      singleWarn,
       el('div', { 'class': 'grid' },
         el('div', { 'class': 'cell' }, el('div', { 'class': 'k', text: 'Implied value' }), el('div', { 'class': 'v', text: fmtUsd(row.implied_value_usd) }), el('div', { 'class': 's', text: 'model ' + DATA.model_version })),
         el('div', { 'class': 'cell' }, el('div', { 'class': 'k', text: 'TVL' }), el('div', { 'class': 'v', text: fmtUsd(row.tvl_usd) }), el('div', { 'class': 's', text: '7d ' + fmtPct(row.change_7d) + (pct !== null && pct !== undefined ? ' · larger than ' + pct + '% of ' + (row.category || 'its category') : '') })),
@@ -262,6 +267,10 @@
     }).sort(function (a, b) { return b.ratio - a.ratio; });
     var nTier1 = cats.filter(function (c) { return c.tier === 'category'; }).length;
     var nTier2 = cats.length - nTier1;
+    var pm = DATA.comparables.by_category['Prediction Market'];
+    var pmText = (pm && pm.category_median !== null)
+      ? ('Prediction Market reads ' + pm.ratio.toFixed(2) + '× off one ' + pm.category_median.toFixed(0) + '× name, shrunk ' + Math.round((1 - (pm.shrink_weight === null ? 0 : pm.shrink_weight)) * 100) + '%')
+      : 'a category with a single traded name can still sit high';
     var table = el('table', { 'class': 'board' },
       el('thead', null, el('tr', null, ['Category', 'Tier', 'Ratio', 'Traded names', 'Raw median / median log TVL'].map(function (h) { return el('th', { text: h }); }))),
       el('tbody', null, cats.map(function (c) {
@@ -278,7 +287,7 @@
       el('p', null, document.createTextNode('Implied value = TVL × ratio × growth × maturity × chains. The ratio comes in two tiers. Tier 1 — a category with traded names reads the median of its names\u2019 log(mcap/TVL), shrunk toward the global log-median with a prior worth ' + model.shrinkage_names + ' names: one wild name cannot set a category, and a category with many names keeps almost all of its own reading. Tier 2 — a category with no traded name reads the size line, log(mcap/TVL) = ' + sl.intercept.toFixed(4) + ' + ' + sl.slope.toFixed(4) + ' × log(TVL), fitted over ' + sl.n + ' traded names (r = ' + sl.correlation.toFixed(2) + '), evaluated at the category\u2019s own median TVL: the multiple the traded universe pays at this line of business\u2019s size. ' + nTier1 + ' categories read tier 1; ' + nTier2 + ' read tier 2. Growth is the 7-day TVL change clamped to −60…+120% at half weight, maturity rises with the days run with no token up to 3 years, and each extra chain adds 2% up to 5 chains. No protocol name is special-cased.')),
       el('div', { 'class': 'tscroll' }, table),
       el('p', { text: 'The board covers all ' + DATA.watchlist_size + ' watchlist protocols and every other pre-token protocol below the $50M floor that passes the same exclusion rule: ' + DATA.early_size + ' early rows, ' + DATA.board_size + ' rows in all. Bridged, staked and exchange products are kept out, as the watchlist rule keeps them out.' }),
-      el('p', { text: 'Limits: the multiple is a comparable, not a valuation. A category whose only traded name is an outlier (Prediction Market reads 1.41× off one 400× name, shrunk 75%) can still sit high, and the size line is a one-variable regression (r = ' + sl.correlation.toFixed(2) + ') — it captures the size effect, not product quality, fees or team. Growth is a single 7-day window. Each farm plan is built from the protocol\u2019s own record — its category, its chains, its TVL and its age — with the capital, the gas on its chain and the hold time the plan states. An implied value is this model\u2019s claim about what a token would be worth if the record stayed as it is; it does not predict whether or when a token is issued.' }));
+      el('p', { text: 'Limits: the multiple is a comparable, not a valuation. A category whose only traded name is an outlier (' + pmText + ') can still sit high, and the size line is a one-variable regression (r = ' + sl.correlation.toFixed(2) + ') — it captures the size effect, not product quality, fees or team. Growth is a single 7-day window. Each farm plan is built from the protocol\u2019s own record — its category, its chains, its TVL and its age — with the capital, the gas on its chain and the hold time the plan states. An implied value is this model\u2019s claim about what a token would be worth if the record stayed as it is; it does not predict whether or when a token is issued.' }));
   }
 
   function render() {
